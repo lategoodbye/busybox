@@ -14,7 +14,7 @@
  */
 
 //usage:#define slattach_trivial_usage
-//usage:       "[-cehmLF] [-s SPEED] [-p PROTOCOL] DEVICE"
+//usage:       "[-cehmLF] [-s SPEED] [-p PROTOCOL] [-P PARITY] DEVICE"
 //usage:#define slattach_full_usage "\n\n"
 //usage:       "Attach network interface(s) to serial line(s)\n"
 //usage:     "\n	-p PROT	Set protocol (slip, cslip, slip6, clisp6, adaptive or qca7k)"
@@ -25,6 +25,7 @@
 //usage:     "\n	-m	Do NOT initialize the line in raw 8 bits mode"
 //usage:     "\n	-L	Enable 3-wire operation"
 //usage:     "\n	-F	Disable RTS/CTS flow control"
+//usage:     "\n	-P PARITY   Use PARITY (even|odd|none). Default is none."
 
 #include "libbb.h"
 #include "libiproute/utils.h" /* invarg() */
@@ -133,6 +134,10 @@ static void sig_handler(int signo UNUSED_PARAM)
 	restore_state_and_exit(EXIT_SUCCESS);
 }
 
+#define PARITY_NONE 0
+#define PARITY_EVEN 1
+#define PARITY_ODD  2
+
 int slattach_main(int argc, char **argv) MAIN_EXTERNALLY_VISIBLE;
 int slattach_main(int argc UNUSED_PARAM, char **argv)
 {
@@ -153,6 +158,8 @@ int slattach_main(int argc UNUSED_PARAM, char **argv)
 	const char *baud_str;
 	int line_disc;
 	int baud_code = -1;   /* Line baud rate (system code) */
+	const char *parity = "none";
+	int parity_code = PARITY_NONE;
 
 	enum {
 		OPT_p_proto  = 1 << 0,
@@ -162,13 +169,14 @@ int slattach_main(int argc UNUSED_PARAM, char **argv)
 		OPT_h_watch  = 1 << 4,
 		OPT_m_nonraw = 1 << 5,
 		OPT_L_local  = 1 << 6,
-		OPT_F_noflow = 1 << 7
+		OPT_F_noflow = 1 << 7,
+		OPT_P_parity = 1 << 8
 	};
 
 	INIT_G();
 
 	/* Parse command line options */
-	opt = getopt32(argv, "p:s:c:ehmLF", &proto, &baud_str, &extcmd);
+	opt = getopt32(argv, "p:s:c:ehmLFP:", &proto, &baud_str, &extcmd, &parity);
 	/*argc -= optind;*/
 	argv += optind;
 
@@ -191,6 +199,18 @@ int slattach_main(int argc UNUSED_PARAM, char **argv)
 		baud_code = tty_value_to_baud(xatoi(baud_str));
 		if (baud_code < 0)
 			invarg(baud_str, "baud rate");
+	}
+
+	if (opt & OPT_P_parity) {
+		if (!strcasecmp("even", parity)) {
+			parity_code = PARITY_EVEN;
+		} else if (!strcasecmp("odd", parity)) {
+			parity_code = PARITY_ODD;
+		} else if (!strcasecmp("none", parity)) {
+			parity_code = PARITY_NONE;
+		} else {
+			invarg(parity, "parity");
+		}
 	}
 
 	/* Trap signals in order to restore tty states upon exit */
@@ -220,12 +240,18 @@ int slattach_main(int argc UNUSED_PARAM, char **argv)
 	if (!(opt & OPT_m_nonraw)) { /* raw not suppressed */
 		memset(&state.c_cc, 0, sizeof(state.c_cc));
 		state.c_cc[VMIN] = 1;
-		state.c_iflag = IGNBRK | IGNPAR;
+		state.c_iflag = IGNBRK;
+		if (parity_code == PARITY_NONE) {
+			state.c_iflag |= IGNPAR;
+		}
 		state.c_oflag = 0;
 		state.c_lflag = 0;
 		state.c_cflag = CS8 | HUPCL | CREAD
 		              | ((opt & OPT_L_local) ? CLOCAL : 0)
 		              | ((opt & OPT_F_noflow) ? 0 : CRTSCTS);
+		if (parity_code != PARITY_NONE) {
+			state.c_cflag |= PARENB | (parity_code == PARITY_ODD ? PARODD : 0);
+		}
 		cfsetispeed(&state, cfgetispeed(&saved_state));
 		cfsetospeed(&state, cfgetospeed(&saved_state));
 	}
