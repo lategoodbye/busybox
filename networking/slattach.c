@@ -17,7 +17,7 @@
 //usage:       "[-cehmLF] [-s SPEED] [-p PROTOCOL] DEVICE"
 //usage:#define slattach_full_usage "\n\n"
 //usage:       "Attach network interface(s) to serial line(s)\n"
-//usage:     "\n	-p PROT	Set protocol (slip, cslip, slip6, clisp6 or adaptive)"
+//usage:     "\n	-p PROT	Set protocol (slip, cslip, slip6, clisp6, adaptive or qca7k)"
 //usage:     "\n	-s SPD	Set line speed"
 //usage:     "\n	-e	Exit after initializing device"
 //usage:     "\n	-h	Exit when the carrier is lost"
@@ -28,6 +28,9 @@
 
 #include "libbb.h"
 #include "libiproute/utils.h" /* invarg() */
+
+/* not defined in ioctl-types.h */
+#define N_QCA7K 26
 
 struct globals {
 	int handle;
@@ -107,23 +110,21 @@ static void restore_state_and_exit(int exitcode)
 /*
  * Set tty state, line discipline and encapsulation
  */
-static void set_state(struct termios *state, int encap)
+static void set_state(struct termios *state, int disc, int encap)
 {
-	int disc;
-
 	/* Set line status */
 	if (set_termios_state_or_warn(state))
 		goto bad;
-	/* Set line discliple (N_SLIP always) */
-	disc = N_SLIP;
 	if (ioctl_or_warn(handle, TIOCSETD, &disc) < 0) {
 		goto bad;
 	}
 
-	/* Set encapsulation (SLIP, CSLIP, etc) */
-	if (ioctl_or_warn(handle, SIOCSIFENCAP, &encap) < 0) {
+	if (disc == N_SLIP) {
+		/* Set encapsulation (SLIP, CSLIP, etc) */
+		if (ioctl_or_warn(handle, SIOCSIFENCAP, &encap) < 0) {
  bad:
 		restore_state_and_exit(EXIT_FAILURE);
+		}
 	}
 }
 
@@ -142,6 +143,7 @@ int slattach_main(int argc UNUSED_PARAM, char **argv)
 		"slip6\0"       /* 2 */
 		"cslip6\0"      /* 3 */
 		"adaptive\0"    /* 8 */
+		"qca7k\0"		/* 26 */
 		;
 
 	int i, encap, opt;
@@ -149,6 +151,7 @@ int slattach_main(int argc UNUSED_PARAM, char **argv)
 	const char *proto = "cslip";
 	const char *extcmd;   /* Command to execute after hangup */
 	const char *baud_str;
+	int line_disc;
 	int baud_code = -1;   /* Line baud rate (system code) */
 
 	enum {
@@ -174,10 +177,14 @@ int slattach_main(int argc UNUSED_PARAM, char **argv)
 
 	encap = index_in_strings(proto_names, proto);
 
-	if (encap < 0)
+	line_disc = N_SLIP;
+	if (encap < 0) {
 		invarg(proto, "protocol");
-	if (encap > 3)
+	} else if (encap == 4) {
 		encap = 8;
+	} else if (encap == 5) {
+		line_disc = N_QCA7K;
+	}
 
 	/* We want to know if the baud rate is valid before we start touching the ttys */
 	if (opt & OPT_s_baud) {
@@ -228,7 +235,7 @@ int slattach_main(int argc UNUSED_PARAM, char **argv)
 		cfsetospeed(&state, baud_code);
 	}
 
-	set_state(&state, encap);
+	set_state(&state, line_disc, encap);
 
 	/* Exit now if option -e was passed */
 	if (opt & OPT_e_quit)
